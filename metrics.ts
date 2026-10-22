@@ -1,5 +1,5 @@
 import { dirname } from 'node:path';
-import type { DirSummary, FileGrowthPattern, LayerResult, MetricsConfig, GlobalStats, TableRow, LayerBreakdown } from './types.ts';
+import type { DirSummary, FileGrowthPattern, FileSystemNode, LayerResult, MetricsConfig, GlobalStats, TableRow, LayerBreakdown } from './types.ts';
 
 const DAY   = 86_400_000;
 const MONTH = DAY * 30.44;
@@ -215,28 +215,55 @@ function siblingFrac(results: DirSummary[]): DirSummary[] {
 
 /** Run metrics across all layers → ranked DirSummary[]. */
 export function computeMetrics(nodes: LayerResult[], metricCfg?: Partial<MetricsConfig>): DirSummary[] {
-  const cfg = useCfg(metricCfg);
-  const byParent = new Map<string, number>();           // tracks parent ctime
+  /* Collect every dir encountered during scanning + all file nodes */
+  const byParent = new Map<string, number>();           // dirPath → ctime (set 1)
+  const files: FileSystemNode[] = [];                   // flat file list for cross-referencing
   for (const layer of nodes) {
-    for (const n of layer.nodes) { if (n.type === 'dir') byParent.set(n.path, n.birthtimeMs); }
+    for (const n of layer.nodes) {
+      if (n.type === 'dir') byParent.set(n.path, n.birthtimeMs);
+      if (n.type === 'file') files.push(n);
+    }
   }
 
   const raw: DirSummary[] = [];
-  for (const layer of nodes) {
-    const byDir = new Map<string, LayerResult['nodes']>();
-    for (const node of layer.nodes) {
-      if (node.type === 'file') {
-        const parent = node.path.split('/').slice(0, -1).join('/') || '/';
-        if (!byDir.has(parent)) byDir.set(parent, []);
-        byDir.get(parent)!.push(node);
-      }
+
+  /* Helper: collect all descendant files of a directory from the flat file list */
+  function dirDescendants(parentPath: string): FileSystemNode[] {
+    return files.filter(f => f.path.startsWith(parentPath + '/'));
+  }
+
+  for (const [pp] of byParent) {
+    const children = dirDescendants(pp);
+
+    /* No descendant files at all — zero-value summary so the dir isn't silently dropped */
+    if (!children.length) {
+      raw.push({
+        path: pp, name: pp.split('/').filter(Boolean).pop()!, depth: -1, layer: 0, parentPath: dirname(pp),
+        totalSizeBytes: 0, fileCount: 0, subDirCount: 0,
+        earliestBirthtimeMs: 0, latestMtimeMs: 0, latestBirthtimeMs: 0, avgFileAgeDays: 0,
+        mtimeFillRateMBd: 0, birthGateRateMBd: 0, compositeRateMBd: 0, ageDeltaDays: undefined,
+        c2sRatioMBd: undefined, birthEntropy: undefined, cohortTrendSlopeMBpm: NaN, cohortRsq: 0,
+        depthConcentration: undefined, siblingFraction: undefined, avgFileSize: 0, medianFileSize: 0,
+        countToSizeDivergence: 0, inodeRisk: 0, extensionMap: {}, agePyramid: { '0-7d': 0, '8-30d': 0, '31-90d': 0, '91-365d': 0, '365+d': 0 },
+        hungerScore: 0, patterns: [],
+      });
+      continue;
     }
-    for (const [pp, nodes] of byDir) {
-      const r = metricsForOne(pp, byParent.get(pp) ?? Date.now(), nodes);
-      if (!r) continue;
-      const { score, patterns } = scoreAndPatterns(r);
-      raw.push({ ...r, hungerScore: score, patterns });
-    }
+
+    /* For a dir with direct children *and* subdirs, metrics should only use **direct** children */
+    const directChildren = files.filter(f => {
+      const parent = f.path.split('/').slice(0, -1).join('/') || '/';
+      return parent === pp;
+    });
+
+    /* When the dir has both direct children and subdirs, compute from direct children (original semantics)
+       When it's a pure container (no direct children), use all descendants for totals */
+    const nodesUse = directChildren.length ? directChildren : children;
+
+    const r = metricsForOne(pp, byParent.get(pp) ?? Date.now(), nodesUse);
+    if (!r) continue;
+    const { score, patterns } = scoreAndPatterns(r);
+    raw.push({ ...r, hungerScore: score, patterns });
   }
 
   siblingFrac(raw);
