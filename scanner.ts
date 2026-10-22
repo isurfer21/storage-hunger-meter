@@ -1,95 +1,102 @@
 import { readdirSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import type { ScannerConfig, FileSystemNode, LayerResult } from './types.ts';
+import { join, basename, dirname as nodeDirname } from 'node:path';
+import type { ScannerConfig, FileSystemNode, LayerResult, DirSummary } from './types.ts';
 
-// ── BFS layer-by-layer scanner ───────────────────────────────────
-
-/**
- * Yields one LayerResult per BFS queue-level.
- * Read-only: only stat + readdir — zero mutations on disk.
- * Symlinks are lstat-checked and always skipped (never followed).
- */
+/** Yield one LayerResult per BFS queue-level. Read-only — zero disk mutations. */
 export function* bfsWalk(config: ScannerConfig): Generator<LayerResult> {
-  let visited = new Set<string>();
-  let queue: string[] = [config.root];     // start with root
-  let layer = 0;
+  const visited = new Set<string>();
+  let queue: string[] = [config.root];
+  layerLoop:
+  for (let layer = 0; layer <= config.maxDepth; layer++) {
+    if (!queue.length) break;
 
-  while ((layer <= config.maxDepth) && (queue.length > 0)) {
-    const nextQueue: string[] = [];       // collect children for next BFS level
-    const layerNodes: FileSystemNode[] = [];  // nodes discovered at this layer
-    const parentMap = new Map<string, string>();   // dirPath → nodes it owns
-
-    let entryCount = queue.length;
-    if (entryCount > config.entryCountLimit) {
-      console.error(`[WARN] entry-count limit reached (${config.entryCountLimit}).  Scanning partial tree.`);
+    if (queue.length > config.entryCountLimit) {
+      console.error(`[WARN] entry-count limit reached (${config.entryCountLimit}). Scanning partial tree.`);
       break;
     }
 
+    const nextQueue: string[] = [];
+    const layerNodes: FileSystemNode[] = [];
+
     for (const dirPath of queue) {
-      // --- stat the parent dir itself ────────────────────────
+      let dirSize = 0, dirCtime = 0, dirBtime = 0;
       try {
-        const dirStat = statSync(dirPath);
-        const isRoot = (dirPath === config.root);
-        
-        layerNodes.push({
-          path:         dirPath,
-          name:         isRoot ? resolve('/').slice(1) : baseName(dirPath), 
-          type:         'dir' as const,
-          sizeBytes:    dirStat.size,            // total bytes of its subtree
-          mtimeMs:      dirStat.mtime.getTime(),
-          birthtimeMs:  dirStat.birthtime.getTime(),
-          depth:        layer,
-          layer:        level,
-        });
-        if (visited.has(dirPath)) continue;   // dedup guard
-        visited.add(dirPath);
+        const ds = statSync(dirPath);
+        dirSize = ds.size; dirCtime = ds.mtime.getTime(); dirBtime = ds.birthtime.getTime();
+      } catch (err) { /* inaccessible — skip */ }
 
-        // --- read children ────────────────────────────────────
-        const entries = readdirSync(dirPath, { withFileTypes: true });
+      // yield the directory itself as a node
+      layerNodes.push({
+        path: dirPath,
+        name: layer === 0 ? '/' : baseName(dirPath),
+        type: 'dir', sizeBytes: dirSize,
+        mtimeMs: dirCtime, birthtimeMs: dirBtime, depth: layer, layer,
+      });
 
-        for (const ent of entries) {
-          const fullPath = join(dirPath, ent.name);
+      if (visited.has(dirPath)) continue;
+      visited.add(dirPath);
 
-          if (ent.isSymlink()) continue;         // skip symlinks
-          if (visited.has(fullPath)) continue;   // dedup guard
+      let entries: ReturnType<typeof readdirSync> = [];
+      try { entries = readdirSync(dirPath, { withFileTypes: true }) }
+      catch (_) { /* unreadable — skip subtree */ }
+
+      for (const ent of entries) {
+        const fullPath = join(dirPath, ent.name);
+
+        // symlinks → always skip
+        if (ent.isSymbolicLink()) continue;
+
+        // dedup across ALL layers
+        if (visited.has(fullPath)) continue;
+
+        try {
+          const st = statSync(fullPath);
           visited.add(fullPath);
 
-          try {
-            const st = statSync(fullPath);       // throws on permission-denied → silently swallow
-            layerNodes.push({
-              path:          fullPath,
-              name:         ent.name,
-              type:        st.isDirectory() ? 'dir' : 'file',
-              sizeBytes:   st.size,
-              mtimeMs:      st.mtime.getTime(),
-              birthtimeMs:  st.birthtime.getTime(),
-              depth:       layer + (st.isDirectory() ? 0 : 1),
-              layer:        level,
-            });
-            
-            parentMap.set(dirPath, [parentMap.get(dirPath) ?? []).concat(fullPath));
+          const isDir = st.isDirectory();
+          layerNodes.push({
+            path: fullPath, name: ent.name, type: isDir ? 'dir' : 'file',
+            sizeBytes: st.size, mtimeMs: st.mtime.getTime(), birthtimeMs: st.birthtime.getTime(),
+            depth: layer + (isDir ? 1 : 0), layer,
+          });
 
-            if (st.isDirectory()) {
-              nextQueue.push(fullPath);          // enqueue for next BFS iteration
-            }
-          } catch {
-            // permission denied or stale entry — safe silently
-          }
-        }
-      } catch {
-        // dir is inaccessible — skip entire subtree, don't blow up
-      } finally if (layer = 0) { continue;         // first-level yield happens below the loop }
+          if (isDir) nextQueue.push(fullPath);
+        } catch (_) { /* permission denied — skip entry */ }
+      }
+    }
 
-    yield { layer: level, rootNodePath: config.root, nodes: layerNodes };
-
+    yield { layer, rootNodePath: config.root, nodes: layerNodes };
     queue = nextQueue;
-    layer++;
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
+function baseName(p: string): string {
+  const lastSlash = p.lastIndexOf('/');
+  return lastSlash < 0 ? '' : p.slice(lastSlash + 1);
+}
 
- function baseName(p: string): string {
-  const sep = p.includes('\\') ? '\\' : '/';
-  return p.slice(p.lastIndexOf(sep) + 1) || resolve('/').slice(1);
- }
+/** Group raw LayerResult nodes into a map of parentDir → DirSummary[] */
+export function groupNodesByParent(layers: LayerResult[]): Map<string, DirSummary[]> {
+  const byParent = new Map<string, DirSummary[]>();
+
+  for (const layer of layers) {
+    // collect children file nodes by their parent directory
+    const filesByDir = new Map<string, FileSystemNode[]>();
+    for (const node of layer.nodes) {
+      if (node.type === 'file') {
+        const pp = node.path.split('/').slice(0, -1).join('/') || '/';
+        if (!filesByDir.has(pp)) filesByDir.set(pp, []);
+        filesByDir.get(pp)!.push(node);
+      }
+    }
+
+    // merge into the running map
+    for (const [pp, nodeFiles] of filesByDir) {
+      if (!byParent.has(pp)) byParent.set(pp, []);
+      const existing = byParent.get(pp)!;
+      for (const nf of nodeFiles) existing.push(nf as unknown as DirSummary);
+    }
+  }
+
+  return byParent;
+}

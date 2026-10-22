@@ -141,7 +141,8 @@ export interface GlobalStats {
   totalDirs: number;
   durationMs: number;
   systemHungerIndex: number;  // weighted-average composite score across all layers
-  entryPathResolved: string;
+  depthScanned: number;           // BFS max depth used for this scan
+  entryPathResolved: string;      // resolved absolute path
 }
 
 /// Full dashboard data payload — consumed identically by CLI formatter and Web API.
