@@ -3,6 +3,9 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "hunger-meter": "index.ts"
+  },
   "scripts": {
     "start": "bun run --watch index.ts",
     "scan": "bun run index.ts --mode cli",
