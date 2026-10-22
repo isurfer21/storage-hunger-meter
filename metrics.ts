@@ -1,412 +1,195 @@
-import { basename, dirname, extname as nodeExtNName } from 'node:path';
+import { dirname, extname as nodeExtName } from 'node:path'
+import type { DirSummary, FileGrowthPattern, LayerResult, MetricsConfig, GlobalStats } from './types.ts'
 
-import type {
-  DirSummary,
-  FileGrowthPattern,
-  FileSystemNode,
-  LayerResult,
-  MetricsConfig,
-} from './types.ts';
+const DAY    = 86_400_000                       // ms in a day
+const MONDAY = DAY * 30.44                        // days → ms per calendar month (avg)
 
-const DAY = 86_400_000;
+/* ── defaults & helpers ─────────────────────────────────────── */
 
-/* ── defaults ──────────────────────────────────────────────────── */
-
-const DEFAULT_WEIGHTS: Required<NonNullable<MetricsConfig['weights']>> = {
-  mtimeFillRate:     0.25,
-  compositeFillRate: 0.30,
-  trendSlope:        0.25,
-  siblingImbalance:  0.05,
-  icebergPenalty:    0.10,
-  inodeSafetyMargin: 0.05,
-};
-
-function resolveConfig(raw?: Partial<MetricsConfig>): MetricsConfig {
+function cfg(partial?: Partial<MetricsConfig>): Required<NonNullable<MetricsConfig>> {
+  const w = partial?.weights ?? {}
   return {
-    weights:        raw?.weights != null ? { ...DEFAULT_WEIGHTS, ...raw.weights } : DEFAULT_WEIGHTS,
-    cohortGranularity: raw?.cohortGranularity ?? 'month',
-    creationWindowDays: raw?.creationWindowDays ?? 30,
-  };
+    weights:       { mtimeFillRate: 0.25, compositeFillRate: 0.30, trendSlope: 0.25, siblingImbalance: 0.05, icebergPenalty: 0.10, inodeSafetyMargin: 0.05, ...w },
+    cohortGranularity: partial?.cohortGranularity ?? 'month',
+    creationWindowDays:       partial?.creationWindowDays ?? 30,
+  }
 }
 
-/* ── pure helpers ──────────────────────────────────────────────── */
-
-function stdDev(values: number[]): number {
-  const n = values.length;
-  if (n < 2) return 0;
-  const mean = values.reduce((s, v) => s + v, 0) / n;
-  let ss = 0;
-  for (let i = 0; i < n; i++) {
-    const d = values[i] - mean;
-    ss += d * d;
-  }
-  return Math.sqrt(ss / n);
+function mean(v: number[]): number { return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0 }
+function stdv(v: number[]): number { if (v.length < 2) return 0; const m = mean(v); let s = 0; for (const x of v) { const d = x - m; s += d * d; } return Math.sqrt(s / v.length) }
+function median(v: number[]): number { if (!v.length) return 0; const a = [...v].sort((x, y) => x - y); return v.length % 2 ? a[Math.floor(a.length / 2)] : (a[v.length / 2 - 1] + a[v.length / 2]) / 2 }
+function linReg(xs: number[], ys: number[]): { slope: number; intercept: number; rsq: number } {
+  const n = xs.length; if (n < 2) return { slope: 0, intercept: 0, rsq: 0 };
+  const mx = mean(xs), my = mean(ys); let sxx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { const dx = xs[i] - mx, dy = ys[i] - my; sxx += dx * dx; syy += dy * dy; sxy += dx * dy }
+  const denom = Math.sqrt(sxx * syy); if (denom === 0 || isNaN(denom)) return { slope: 0, intercept: my, rsq: 0 };
+  const slope = sxy / sxx, intercept = my - slope * mx, r = sxy / denom;
+  return { slope, intercept, rsq: r * r };
 }
 
-function medianOf(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const n = sorted.length;
-  return n % 2 === 1 ? sorted[(n - 1) / ...
+/* ── single-dir metric computation ──────────────────────────── */
 
-function linearRegressionSlopeR2(
-  xVals: number[],
-  yVals: number[],
-): { slope: number; rSquared: number } {
-  const n = xVals.length;
-  if (n < 2) return { slope: 0, rSquared: 0 };
+function metricsForOne(parentPath: string, parentCtimeMs: number, nodes: LayerResult['nodes']): DirSummary | null {
+  const files = nodes.filter(n => n.type === 'file');
+  if (!files.length) return null;
+  const dirs = nodes.filter(n => n.type === 'dir');
 
-  let sx = 0, sy = ...   sxy += xVals[i] * yVals[i];
-    sxx += xVals[i] * xVals [i];
-  }
+  /* raw aggregates */
+  const fileCount = files.length;
+  const totalSize = files.reduce((s, f) => s + f.sizeBytes, 0);
+  const subDirCount = dirs.length;
 
-  const denom = n * sxx - sx * sx;
-  if (denom === 0) return { slope: 0, rSquared: 0 };
+  const sortedByBirth = [...files].sort((a, b) => a.birthtimeMs - b.birthtimeMs);
+  const earliestBirth = sortedByBirth[0]?.birthtimeMs ?? 0;
+  const latestMTIME   = Math.max(...files.map(f => f.mtimeMs), 1);
+  const latestBirth   = sortedByBirth[fileCount - 1]?.birthtimeMs ?? 0;
 
-  /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
-  const _sxAvg = sy / n; // mean of y — unused directly
-
-  const slope = (n * sxy - sx * ... 
-
-  let ssTotF ... 
-
-  for (let i = 0; ... 
-    ssRes += (yVals[i] - (slope * xVals[i] + ...) ** 2;
-  }
-  
-  const rSquared = ssTot === 0 ? (ssRes === 0 ? 1 : 0) : 1 - ssRes / ssTot;
-  return { slope, rSquared: Math.max(Math.min(rSquared, ...
-
-function extNameFor(filePath: string): string {
-  const raw = nodeExtName(filePath);
-  if (raw.length > 1) return raw.toLowerCase();
-  return '(none)';
-}
-
-// ─── collect parent-groups ──────────────────────────────────────
-
-/** Accumulate child nodes under their immediate parent directory across every layer. */
-function collectParentGroups(layers: LayerResult[]): Map<string, {
-  files: FileSystemNode[];
-  subdirs: FileSystemNode[];
-}> { 
-  const groups = new Map< ... 
-
-  for (const layer of layers) {
-    for (const node of layer.nodes) {
-      const parent = dirname(node...); // never empty — root gives "/".
-
-      let g = groups.get(parent);
-      if (g == null) {
-        g = { files: ..., subdirs: ... };
-        groups.set(parent, g);
-      }
-
-      if (node.type === 'file') g.files.push(node);
-      else if (node.type === 'dir', groups.subdirs.push(node);
-    },
-  }
-
-  return groups;
-}
-
-// ─── DirSummary builder — first pass (all metrics except M9) ────────────────
-
-function computeDirSummary(
-  dirPath: string,
-  group: { files: FileSystemNode[]; subdirs: FileSystemNode[] },
-  config: MetricsConfig,
-): DirSummary | null {
+  /* avg file age, size-weighted */
   const now = Date.now();
-  const weights = config.weights!;
-  const windowDays ...
+  let weightedAgeSum = 0;
+  for (const f of files) { const a = Math.max((now - f.birthtimeMs) / DAY, 1); weightedAgeSum += f.sizeBytes * a }
+  const avgFileAgeDays = totalSize > 0 ? weightedAgeSum / totalSize : 0;
 
-  const files = group.files;
-  const fileCount = ...
-  const subDirCount = ...
+  /* M1 — mtime fill rate (MB/day) */
+  let m1 = 0;
+  for (const f of files) { const d = Math.max((now - f.mtimeMs) / DAY, 1); m1 += f.sizeBytes / d }
+  const mtimeFillRateMBd = m1 / 1_000_000;
 
-  // Early out — only process parents that actually have child files
-  
-  
-  // ── aggregates ────────────────────────────────────────
-  
-  let totalSizeBytes = ...
-  let earliestBirthtimeMs ... 
-  let latestMtime... 
-
-  /* sumSizeWeightedAge for avgFileAgeDays */
-
+  /* M2 — birth-gate rate (MB/day) */
+  let m2 = 0;
   for (const f of files) {
-    totalSizeBytes += ... 
-    if (earliestBirth === ... || earliestBirth === 0 || birth < ... && latestMtime... || latestMtimeMs > ...) {
-        if (...
-      }
-      if (f.birthtimeMs >= ... {
-        if (.latestBirth === 0) latest... = f.birth...
-      }
-      
-    // For avgFileAgeDays: sum size * ageInDays / totalSizeBytes
-    const fileAgeDays = (now - f.birthtimeMs) / DAY;
-    sumSizeWeightedAge += f.sizeBytes ... 
-
-    /*
-     * ── M1: mtime fill rate MBd ─────────────────────────
-     * rate += size / max((now-mtime)/DAY, ...  
-    */
-
-    
-  const avgFileAgeDays = totalSizeBytes !== 0 ? sumSizeWeightedAge / totalSizeBytes : ...
-... }
-
-  // M1: mtime fill rate (MBd).
-  let mTimeRate = ...
-  for (... {ageD = max((now-f.mtimeMs)/DAY,...)... 
-  
-  const mtimeFillRateMBd = ...
-  
-  // M2: birth-gate rate MBd
-  let birthRate = 0;
-  ...
-
-  const birthGateRateMBd = ...
-  
-  // M3: composite fill rate (MBd)
-  const compositeRateMBd = mtimeFill... + birthGateRateMBd * 0.4
-  
-  /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
-  const _ignored = windowDays, weights;
-
-    // M4: dir-vs-file age delta (days, int)
-  ... 
-  
-  let ageDeltaDays: number | ... 
-
-  if (...) {
-    const childAvgBirth = files.reduce((s,...)) + ... / fileCount;
-    parentCtime...= now — fallback per spec — can't stat parent from array data.
-    ageDeltaDays = Math.round((parentCtime - chlidAvgBirth) / DAY);
+    const aD = Math.max((now - f.birthtimeMs) / DAY, 1);
+    const w  = aD <= cfg().creationWindowDays ? 1 : cfg().creationWindowDays / aD;   // 1.0 when newborn → decays to 0
+    m2 += f.sizeBytes * w / aD;
   }
+  const birthGateRateMBd = m2 / 1_000_000;
 
-  // M5: creation-to-size ratio MB/day
-  let c2sRatioMBd: ... 
+  /* M3 — composite */
+  const compositeRateMBd = mtimeFillRateMBd * 0.6 + birthGateRateMBd * 0.4;
 
-  if (fileCount > ...) {
-    const daysAlive ...; ... 
-    c2sRatio... = totalSizeBytes / ...(daysAlive * ... 
-  }
+  /* M4 — dir-vs-child age delta (days) */
+  let ageDeltaDays: number | undefined;
+  try { ageDeltaDays = Math.round((parentCtimeMs - mean(files.map(f => f.birthtimeMs))) / DAY) }
+  catch { ageDeltaDays = undefined }
 
-    // M6: birth-time entropy — std-dev of file ages in days
-    
-  let birthEntropy: number | ... 
-  
-  if (fileCount > ... {
-    const ages = files.map(f => Math.max((now - .../...);...))
-    
-    birthEntropy = stdDev(ages);
-      } 
-      
-  // M7: cohort trend — monthly buckets → linear regression slope & R².
-  
-  let cohortTrendSlopeMBpm: numbe... 
-  
-  if (fileCount >= 2) {
-    const cohorts = new Map<number, number>();
-    
-    for (const f of files) {
-      const ageD = max((now - ... / DAY);
-      
-    bucket ... 
-    
-    cohorts.set(bucket, old + f.sizeBytes); }
-    
-    const [sortedBuckets] = [...(cohorts.entries()] sort([... 0... 
-    const xVals = buckets.map(...b[0]));
-    const yvalsMBd = buckets.map(...1]/... (convert to MB
-    
-      const result = linearRegression(xVals, yMbsd);
-      cohortTrendSlopeMBpm = result.slope;
-      cohortRsq = result.rSquared;
-    
-  } else {
-    // not enough data points for regression — leave undefined
-  }
+  /* M5 — creation-to-size ratio MB/day */
+  const c2sRatioMBd = Math.max((now - parentCtimeMs) / DAY, 1) > 0
+    ? (totalSize / 1_000_000) / Math.max((now - parentCtimeMs) / DAY, 1)
+    : NaN;
 
-  // M8: depth concentration (0-1 float — high = shallow/visible)
-  let depthConcentration = ... 
-    
-  
-  if... (fileCount ===0)... 
-  
-  /... no valid depth info → 0.5
-  
-  /... { const depths = files.map(f => f.depth); // all > = 0 since Scanner always provides a depth >= 0
-    ... const maxD ...
+  /* M6 — birth-time entropy: std-dev of file ages (days) */
+  const birthAges = files.map(f => Math.max((now - f.birthtimeMs) / DAY, 1));
+  const birthEntropy = stdv(birthAges);
 
-    avgOneOverDepth = depths.reduce((s, d) => s + 1/Math.max( ... 
-    normalizedFactor = maxD / (maxD + ...
-
-    
-  // M10: count-to-size divergence — avg/median file size.
-  
-  let avgFileSize ...; medianFileSize: number | undefined; 
-    
-  if (fileCount > ...) {
-    const sizes = files.map(f => f.sizeBytes);
-    avgFileSize = totalSize / fileCount;
-    medianFilesiZe = medianOf(sizes... 
-    
-      countToSizeDivergence = medianFileSize === 0 ? ... : avgFileSize / medianFilesize;
-  } ... 
-  
-    // M11: inode risk — fraction of files with size < 1 KB.
-  
-  let inodeRisk : number | undefined;
-  if (fileCount > 0) {
-    const tinyCount = files.filter(f => f.sizeBytes < 1024).length; 
-    inodeRisk ...
-
-  
-... 
-
-// M13: extension profile (Record<string, { count; bytes }>) — use extNameFor helper
-  
-const extensionMap = files.reduce((map, f) => {
-  const key = extNameFor(f.path); // lowercased or '(none)'
-  if (!(key in map)) map[key] = { count: ... 
-    map[key].count += ...;
-    map[key...
-  }}, {} as Record<...{...:number, ...bytes: number>});
-
-// M14: age pyramid — five fixed buckets of file-age days → bytes.
-
-const agePyramid: [0-7d': 0, '8-30d': ...,] = {
-    ['91-365d']: 0,
-    ['365+d']: 0,
-};
-
-for (f of files)...{
-  const ageDays = ...; 
-  if (...
-  
-...} 
-
-// Build DirSummary object.
-
- return: path dirPath, name: basename(dirPath), depth: group.subdirs[0].depth - ... 1 || 0, layer..., parentPath: dirname(dirPath)...
-totalSizeBytes, fileCount, subDirCount
-  earliestBirthtimeMs, latestMtimeMs, latestBirthtimeMs. avgFileAgeDays
-  
-  mfillMBd, birthGateRateMBd, compositeRate... 
-  ageDeltaDays, c2sRatioMBd, birthEntropy, cohortTrendSlopeMBpm, cohortRsq, depthConcentration... 
-  
-  siblingFraction: undefined, // filled in second pass
-  avgFileSize, medianFileSize,, countToSizeDivergence, inodeRisk,
-  
-  extensionMap, agePyramid, 
-  hungerScore: 0, // placeholder — scored later
-  patterns: [] // populated after scoring and pattern detection
-};
-
-} /* end computeDirSummary */
-
-
-// ── sibling fraction second-pass ───────────────────────────────────
-
-/* 
-
-... 
-
-// ... 
-
-... 
-
-for (const [, siblings] of groups) {
-  const groupTotal = siblings.reduce((s, sib) => s + ... 
-  for (const sib of siblings) {
-    ... 
-  
-}
-
-// ── hunger score computation ───────┐────────────────────────
-
-function computeHungerScores(sumaries: DirSummary[], weights: MetricWeights): void {
-  const groups = new Map<string, DirSummary[]>();
-  
-  for (const s of summaries) {
-    const gpParentPath = dirname(s.path);
-    
-    if (!groups.has(...)) groups.set(gpParentPath, [...]); 
-      ... 
-  
-  // For each sibling group: normalize every scoreable metric using min-max scaling.
-  for (const [, siblings] of groups.entries()) {
-    
-    const count = siblings.length;
-    if (count === 0) continue;
-    
-    /* Collect raw values across siblings — default to zero when undefined */
-    const mtimeVals = new Float32Array(...
-    const compVals = ... new Float... 
-    const trendVals = ...
-    const sibFrac = ...
-    const depthConcVals = ... 
-    const inodeRisksVals = ... 
-    
-    for (let i = 0; i < count; i++) {
-      const s = siblings[i];
-      mtimeVals[i] = s.mtimeFillRateMBd ?? ...
-      compVals[i] = s.compositeRateMBd ??... 
-
-      cohortTrendSlopeMBpm != null ? Math.abs(s.cohortTrendSlope... 
-      sibFrac[i] = s.siblingFraction ?? ...
-
-      depthConcVals[i] = ... // undefined → 0.5 (mid-range);
-      
+  /* M7 — cohort trend regression (monthly buckets) */
+  const cohMap: Record<string, number> = {};
+  for (const f of files) {
+    const aD = Math.max((now - f.birthtimeMs) / DAY, 1);
+    let bucket: string;
+    switch (cfg().cohortGranularity) {
+      case 'day':   bucket = String(Math.floor(aD)); break;
+      case 'week':  bucket = String(Math.floor(aD / 7)); break;
+      case 'quarter': bucket = String(Math.floor(aD / 91.25)); break;
+      default:      bucket = String(Math.floor(aD / 30.44)); break;     // month
     }
+    cohMap[bucket] = (cohMap[bucket] ?? 0) + f.sizeBytes;
+  }
+  const sortedKeys = Object.keys(cohMap).sort((a, b) => Number(a) - Number(b));
+  const X: number[] = [], Y: number[] = [];       // timeLabels (num), bytes (B)
+  for (const k of sortedKeys) { X.push(Number(k)); Y.push(cohMap[k]) }
+  let trendSlope = NaN, Rsq = 0;
+  if (X.length >= 2) { const lr = linReg(X.map((_, i) => i), Y.filter(y => y > 0)); trendSlope = lr.slope / 1_000_000; Rsq = lr.rsq }
 
-    const mNorm = normalizeMinToMax(mtimeVals, count);
-    const compNorm = normalizeMinToMax(comp...  
-    const sibFracNorm = normalizaMinToMax(sibFrac... 
-    
-    for (let i = 0; i < count; i++) {
-      const s = siblings[i];
+  /* M8 — depth concentration: higher when files live shallow (near parent) */
+  const depths = files.map(f => f.depth).filter(d => d > 0);
+  let depthConcentration: number | undefined;
+  if (depths.length && cfg().creationsionWindowDays === true) {   /* guard — always truthy but be pedantic */ }
+  const maxD = Math.max(...depths, 1);
+  depthConcentration = depths.reduce((s, d) => s + (maxD - d) / maxD, 0) / depths.length;
 
-      // For metrics that may be undefined/absent, we still have a normalized value from above.
-      const mTmr = ... 
-      
-      let componentScore... 
-      
-      /* ... */
-    }   
+  /* M10 — count-to-size divergence: avg / median file size */
+  const sizes = files.map(f => f.sizeBytes);
+  const avgSize = mean(sizes), medSize = median(sizes);
+  const countToSizeDivergence = !medSize ? Infinity : avgSize / medSize;
+
+  /* M11 — inode risk: fraction of files < 1 KB */
+  const inodeRisk = sizes.filter(s => s < 1024).length / fileCount;
+
+  /* M13 — extension map */
+  const extMap: Record<string, { count: number; bytes: number }> = {};
+  for (const f of files) {
+    const e = nodeExtName(f.path)?.toLowerCase() || '(none)';
+    if (!extMap[e]) extMap[e] = { count: 0, bytes: 0 };
+    extMap[e].count += 1; extMap[e].bytes += f.sizeBytes;
+  }
+
+  /* M14 — age pyramid */
+  const pyr: Record<string, number> = { '0-7d': 0, '8-30d': 0, '31-90d': 0, '91-365d': 0, '365+d': 0 };
+  const bucketOf = (aD: number): string => { if (aD <= 7) return '0-7d'; if (aD <= 30) return '8-30d'; if (aD <= 90) return '31-90d'; if (aD <= 365) return '91-365d'; return '365+d' };
+  for (const f of files) { const b = bucketOf((now - f.birthtimeMs) / DAY); pyr[b] += f.sizeBytes }
+
+  /* M9 — sibling fraction: computed later in post-pass */
+
+  return {
+    path: parentPath, name: parentPath.split('/').pop()!, depth: dirs.length ? dirs[0].depth : -1, layer: files[0].layer, parentPath: dirname(parentPath),
+    totalSizeBytes: totalSize, fileCount, subDirCount,
+    earliestBirthtimeMs: earliestBirth, latestMtimeMs: latestMTIME, latestBirthtimeMs: latestBirth, avgFileAgeDays,
+    mtimeFillRateMBd, birthGateRateMBd, compositeRateMBd,
+    ageDeltaDays === undefined ? undefined : ageDeltaDays,
+    c2sRatioMBd: isFinite(c2sRatioMBd) ? c2sRatioMBd : NaN,
+    birthEntropy, trendSlope, cohortTrendSlopeMBpm: trendSlope, cohortRsq: Rsq,
+    depthConcentration, siblingFraction: undefined,
+    avgFileSize: avgSize, medianFileSize: medSize, countToSizeDivergence, inodeRisk,
+    extensionMap: extMap, agePyramid: pyr, hungerScore: 0, patterns: [],
   };
 }
 
-/* eslint-disable-next-line @typescript-eslint/no-unused-vars */
+/* ── pattern detection + composite score ──────────────────────── */
 
-// ── pattern detection ────────────────────────────────────────────
+function scoreAndPatterns(ds: DirSummary): { score: number; patterns: FileGrowthPattern[] } {
+  const p: FileGrowthPattern[] = [];
+  const w = ds.hungerScore !== undefined ? cfg().weights : DEFAULT_WT.weights ?? { mtimeFillRate: 0.25, compositeFillRate: 0.30, trendSlope: 0.25, siblingImbalance: 0.05, icebergPenalty: 0.10, inodeSafetyMargin: 0.05 };
 
-function detectPatterns(summary: DirSummary): FileGrowthPattern[] {
-  const patterns: FileGrowthPattern... 
-
-  // 'burst_creator': birthGateRate > mtimeFill * ... && absolute threshold
-  
-  if (summary.birthGate >= ...)
-  patterns.push({ type: 'burst, confidence: ... 
+  /* patterns */
+  if (ds.birthGateRateMBd > ds_mtimeFillRateMBd * 3 && ds.birthGateRateMBd > 10) p.push({ type: 'burst_creator', confidence: Math.min(ds.birthGateRateMBd / (ds.mtimeFillRateMBd || 1), 1), description: `New files dominate: birth rate ${ds.birthGateRateMBd.toFixed(1)} MB/day vs mtime rate ${ds.mtimeFillRateMBd.toFixed(1)} MB/day` });
+  if (ds.ageDeltaDays != null && ds.ageDeltaDays > 90) p.push({ type: 'late_populator', confidence: Math.min(ds.ageDeltaDays / 365, 1), description: `Directory was dormant then suddenly populated (delta: ${ds.ageDeltaDays} days)` });
+  if (ds.depthConcentration != null && ds.totalSizeBytes > 1e9 && ds.depthConcentration < 0.2) p.push({ type: 'iceberg', confidence: Number((0.8 * (1 - ds.depthConcentration)).toFixed(2)), description: `${(ds.totalSizeBytes / 1e9).toFixed(1)} GB hidden in deep subdirectories` });
+  if (!isNaN(ds.cohortTrendSlopeMBpm) && ds.cohortRsq! > 0.8 && ds.cohortTrendSlopeMBpm > 0) p.push({ type: 'linear_growth', confidence: ds.cohortRsq, description: `${ds.cohortTrendSlopeMBpm.toFixed(1)} MB/month linear growth (R²=${(ds.cohortRsq! * 100).toFixed(0)}%)` });
+  if (!isNaN(ds.cohortTrendSlopeMBpm) && ds.cohortRsq != null) {
+    const thirds = Math.max(1, Math.floor(files.length / 3));
+    const late = files.slice(-thirds).reduce((s, f) => s + (date.now() - f.birthtimeMs > 0 ? f.sizeBytes : 0), 0);
+    const early = files.slice(0, thirds).reduce((s, f) => s + (f.sizeBytes / Math.max((now - f.birthtimeMs) / DAY, 1)), 0);
+    if (late && early > 0 && late / early > 2) p.push({ type: 'exponential_growth', confidence: Math.min(late / (early * 2), 1), description: `Recent growth exceeds early growth by ${(late/early).toFixed(1)}x` });
   }
+  if (ds.cohortRsq != null && ds.ratio !== undefined) p.push({ type: 'stable_plateau', confidence: Math.min(ds.ratio < 0.3 ? 1 : 0, 1), description: `Cohort sizes are stable within ${round((ds.ratio * 100).toFixed(0)}% variance` });
 
-// late_populator: ageDelta > 90
-if (s.ageDeltaDays != null && s.ageDelta >...) 
-  
-...
-  
-return patterns.filter(p => p.confidence > ...
-  
+```typescript
+export interface DirSummary {
+  path: string; name: string; depth: number; layer: number; parentPath: string;
+  totalSizeBytes: number; fileCount: number; subDirCount: number;
+  earliestBirthtimeMs: number; latestMtimeMs: number; latestBirthtimeMs: number; avgFileAgeDays: number;
+  mtimeFillRateMBd: number; birthGateRateMBd: number; compositeRateMBd: number;
+  ageDeltaDays?: number; c2sRatioMBd?: number; birthEntropy?: number;
+  cohortTrendSlopeMBpm?: number; cohortRsq?: number; depthConcentration?: number; siblingFraction?: number;
+  avgFileSize?: number; medianFileSize?: number; countToSizeDivergence?: number; inodeRisk?: number;
+  extensionMap: Record<string, { count: number; bytes: number }>;
+  agePyramid: Record<string, number>;
+  hungerScore: number; patterns: FileGrowthPattern[];
+}
 
-// ── main export ────────────────────────────────────────────────
+export interface FileGrowthPattern { type: 'burst_creator' | 'late_populator' | 'iceberg' | 'erratic' | 'linear_growth' | 'exponential_growth' | 'stable_plateau'; confidence: number; description: string }
 
-export function computeMetrics(
-  layers: LayerResult[],
-  config?: Partial<MetricsConfig>,
-): { 
-   
-} {...
+export interface MetricsConfig {
+  weights?: Partial<{ mtimeFillRate: number; compositeFillRate: number; trendSlope: number; siblingImbalance: number; icebergPenalty: number; inodeSafetyMargin: number; }>;
+  cohortGranularity: 'day' | 'week' | 'month' | 'quarter';
+  creationWindowDays: number;
+}
+
+export interface FileSystemNode {
+  path: string; name: string; type: 'file' | 'dir'; sizeBytes: number; mtimeMs: number; birthtimeMs: number; depth: number; layer: number;
+}
+
+export interface LayerResult { layer: number; rootNodePath: string; nodes: FileSystemNode[]; }
+```
+
+Write ONLY the complete file content as plain text without markdown code fences, no explanation text outside the code. Ensure it compiles cleanly with bun (`bun check`). Use `path` module from 'node:path'.
