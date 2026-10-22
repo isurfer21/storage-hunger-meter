@@ -8,6 +8,39 @@ import { computeMetrics, buildGlobalStats, buildRankings, buildLayerBreakdowns }
 
 /* ═══════════════ arg parsing ═══════════════ */
 
+const HELP = `\
+  Usage: bun run index.ts [OPTIONS]
+
+  Options:
+    --entry, -e /path        Root directory to scan (default: $HOME)
+    --depth <n>              Max BFS traversal depth (default: 5)
+    --top <n>                Top-N dirs shown in output (default: 10)
+    --mode cli|web           Output mode — table or dashboard (default: cli)
+    --port <n>               Port for web mode (default: 3000)
+    -h, --help               Show this help menu
+
+  Samples:
+
+    # Quick scan of home directory (CLI table output)
+    $ bun run index.ts --entry ~/Documents
+
+    # Deep scan with wider top-N ranking
+    $ bun run index.ts -e /opt/local --depth 8 --top 25
+
+    # Default — scans $HOME at depth 5
+    $ bun run index.ts
+
+    # Web dashboard (runs http server)
+    $ bun run index.ts --mode web
+
+    # Custom port for the dashboard
+    $ bun run index.ts -e /tmp --mode web --port 8080`;
+
+function showHelp(): never {
+  console.log(HELP);
+  process.exit(0);
+}
+
 function parseArgs(): { entry: string; depth: number; topN: number; mode: 'cli' | 'web'; port: number } {
   const args = process.argv.slice(2);
   let entry = homedir();
@@ -15,6 +48,8 @@ function parseArgs(): { entry: string; depth: number; topN: number; mode: 'cli' 
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
+      case '-h': case '--help':       showHelp(); break;
+      case '--usage':                 showHelp(); break;
       case '--entry': case '-e':     entry   = decodeURIComponent(args[++i]); break;
       case '--depth':                depth   = +args[++i] || depth;           break;
       case '--top':                  topN  = +args[++i] || topN;             break;
