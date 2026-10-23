@@ -162,13 +162,10 @@ function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<Ret
   if (!rankings.length) { console.log('No files found.'); return; }
 
   console.log('\nTOP PARENT EATERS');
-  const tableRows = rankings.map(r => ({
-    '#': `${r.emoji} ${r.rank}`.trim(),
-    Path:        r.path,
-    Size:       r.size,
-    'FillRate': r.fillRate,
-    Hunger:     r.hungerScore,
-  }));
+  const tableRows = rankings.map(r => {
+    const rankStr = r.rank <= 3 ? `${r.emoji}` : r.emoji;          // 🥇/#4 already shows rank
+    return { '#': rankStr, Path: r.path, Size: r.size, 'FillRate': r.fillRate, Hunger: r.hungerScore };
+  });
   console.log(Bun.inspect.table(tableRows, { truncate: 80 }));
 
 
