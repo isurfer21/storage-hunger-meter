@@ -68,6 +68,18 @@ function parseArgs(): { entry: string; depth: number; topN: number; mode: 'cli' 
 
 /* ═══════════════ shared scan pipeline ═══════════════ */
 
+/** Accurate directory total via Bun.Glob (unlimited depth). Matches your suggested algorithm. */
+function dirSize(dirPath: string): number {
+  const glob = new Bun.Glob('**/*');
+  let total = 0;
+  for (const entry of glob.scanSync(dirPath)) {
+    if (entry.endsWith('/')) continue;   // skip sub-directory dirs — counted via their own files
+    const fullPath = join(dirPath, entry);
+    try { total += Bun.file(fullPath).size; } catch {}
+  }
+  return total;
+}
+
 function runScan(cfg: ScannerConfig) {
   const t0 = Date.now();
   const layers: import('./types.ts').LayerResult[] = [];
@@ -79,7 +91,18 @@ function runScan(cfg: ScannerConfig) {
   /* Run full computeMetrics once — groups files by parent internally */
   const summaries = computeMetrics(layers as any, { creationWindowDays: 30 });
 
+  /* Override inaccurate BFS totals with accurate Glob-based sizes for every scanned directory */
+  const realRootTotal = dirSize(cfg.root);
+  const rootEntry = summaries.find(d => d.path === cfg.root);
+  if (rootEntry) rootEntry.totalSizeBytes = realRootTotal;
+
+  for (const s of summaries) {
+    const actual = dirSize(s.path);
+    if (actual > 0 && s.totalSizeBytes !== actual) s.totalSizeBytes = actual;
+  }
+
   const gs = buildGlobalStats(Date.now() - t0, summaries, cfg.root, cfg.maxDepth);
+
   return { data: summaries, global: gs };
 }
 
@@ -99,15 +122,16 @@ function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<Ret
   if (!rankings.length) { console.log('No files found.'); return; }
 
   console.log('\nTOP PARENT EATERS');
-  console.log(' Rank   Path                                          Size            FillRate      Hunger\n');
+  const tableRows = rankings.map(r => ({
+    '': r.emoji,
+    '#': r.rank,
+    Path:       r.path,
+    Size:       r.size,
+    'FillRate': r.fillRate,
+    Hunger:     r.hungerScore,
+  }));
+  console.log(Bun.inspect.table(tableRows, { truncate: 80 }));
 
-  for (const r of rankings) {
-    const col = r.hungerScore > 75 ? '\x1b[31m' : r.hungerScore > 50 ? '\x1b[33m' : r.hungerScore > 25 ? '\x1b[36m' : '\x1b[32m';
-    const reset = '\x1b[0m';
-    console.log(` ${col}${r.emoji} #${r.rank}   \x1b[36m${r.path}\x1b[0m`);
-    console.log(`                    Size: ${r.size.padStart(13)}  Rate: ${r.fillRate.padStart(14)}  Hunger: ${r.hungerScore}`);
-    console.log();
-  }
 
   console.log('\n\nLAYER SIBLING BREAKDOWN');
   for (const lb of breakdowns.slice(0, 5)) {

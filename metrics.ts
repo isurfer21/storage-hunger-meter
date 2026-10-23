@@ -284,9 +284,16 @@ export function rankEmoji(i: number): string {
 }
 
 export function buildGlobalStats(durationsMs: number, summaries: DirSummary[], entryPath: string, scannedDepth = 5): GlobalStats {
-  const totalBytes = summaries.reduce((s, d) => s + d.totalSizeBytes, 0);
+  /* Sum all summaries' totals — these are already unique per dir (no parent-overlap because each summary is a distinct directory).
+     For absolute root total we could use du -ka; here the union of all dirs covers every scanned file at least once. */
   const totalFiles = summaries.reduce((s, d) => s + d.fileCount, 0);
-  const totalDirs  = summaries.length;                                        // each summary is one dir
+
+  /* Get unique bytes: each summary's fileCount is per-dir (direct children only), but for global we want true filesystem usage.
+     Use the root dir entry as the single accurate du -ka equivalent. */
+  const rootEntry = summaries.find(d => d.path === entryPath);
+  const totalBytes = rootEntry?.totalSizeBytes ?? 0;
+
+  const totalDirs  = summaries.length;
   const avgHunger = totalDirs ? summaries.reduce((s, d) => s + d.hungerScore, 0) / totalDirs : 0;
   return { totalBytesScanned: totalBytes, totalFiles, totalDirs, durationMs: durationsMs, systemHungerIndex: Math.round(avgHunger), depthScanned: scannedDepth, entryPathResolved: entryPath };
 }
