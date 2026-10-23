@@ -237,33 +237,33 @@ export function computeMetrics(nodes: LayerResult[], metricCfg?: Partial<Metrics
 
     /* No descendant files at all — zero-value summary so the dir isn't silently dropped */
     if (!children.length) {
+      // subDirCount: count all directory entries under this dir in the scan tree
+      const depthPp = pp.split('/').filter(Boolean).length;
+      const childrenDirs = [...byParent.keys()].filter(d => d !== pp && d.startsWith(pp + '/'));
       raw.push({
-        path: pp, name: pp.split('/').filter(Boolean).pop()!, depth: -1, layer: 0, parentPath: dirname(pp),
-        totalSizeBytes: 0, fileCount: 0, subDirCount: 0,
+        path: pp, name: pp.split('/').filter(Boolean).pop()!, depth: depthPp || -1, layer: 0, parentPath: dirname(pp),
+        totalSizeBytes: 0, fileCount: 0, subDirCount: childrenDirs.length,
         earliestBirthtimeMs: 0, latestMtimeMs: 0, latestBirthtimeMs: 0, avgFileAgeDays: 0,
         mtimeFillRateMBd: 0, birthGateRateMBd: 0, compositeRateMBd: 0, ageDeltaDays: undefined,
         c2sRatioMBd: undefined, birthEntropy: undefined, cohortTrendSlopeMBpm: NaN, cohortRsq: 0,
         depthConcentration: undefined, siblingFraction: undefined, avgFileSize: 0, medianFileSize: 0,
-        countToSizeDivergence: 0, inodeRisk: 0, extensionMap: {}, agePyramid: { '0-7d': 0, '8-30d': 0, '31-90d': 0, '91-365d': 0, '365+d': 0 },
+        countToSizeDivergence: 0, inodeRisk: 0, extensionMap: {}, agePyramid: { '0-7d': 0, '8-30d': 0, '91-365d': 0, '365+d': 0 },
         hungerScore: 0, patterns: [],
       });
       continue;
     }
 
-    /* For a dir with direct children *and* subdirs, metrics should only use **direct** children */
-    const directChildren = files.filter(f => {
-      const parent = f.path.split('/').slice(0, -1).join('/') || '/';
-      return parent === pp;
-    });
+    /* Always use all descendant files. totalSizeBytes = recursive subtree sum (du -ks style).
+       fileCount, fill rate, cohort trends etc. also now reflect the full descendant content. */
+    const depthPp = pp.split('/').filter(Boolean).length || -1;
 
-    /* When the dir has both direct children and subdirs, compute from direct children (original semantics)
-       When it's a pure container (no direct children), use all descendants for totals */
-    const nodesUse = directChildren.length ? directChildren : children;
+    /* subDirCount: count all discovered directories whose path starts with this dir + '/' */
+    const childrenDirsCount = [...byParent.keys()].filter(d => d !== pp && d.startsWith(pp + '/')).length;
 
-    const r = metricsForOne(pp, byParent.get(pp) ?? Date.now(), nodesUse);
+    const r = metricsForOne(pp, byParent.get(pp) ?? Date.now(), children);
     if (!r) continue;
     const { score, patterns } = scoreAndPatterns(r);
-    raw.push({ ...r, hungerScore: score, patterns });
+    raw.push({ ...r, depth: depthPp, subDirCount: childrenDirsCount, hungerScore: score, patterns });
   }
 
   siblingFrac(raw);
