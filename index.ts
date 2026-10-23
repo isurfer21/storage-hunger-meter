@@ -99,13 +99,14 @@ function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<Ret
   if (!rankings.length) { console.log('No files found.'); return; }
 
   console.log('\nTOP PARENT EATERS');
-  console.log(sep + '  ════════  ═══════════════  ══════');
-  console.log(' Rank   Path                              Size            FillRate      Hunger');
-  console.log(sep + '  ════════  ═══════════════  ══════');
+  console.log(' Rank   Path                                          Size            FillRate      Hunger\n');
+
   for (const r of rankings) {
     const col = r.hungerScore > 75 ? '\x1b[31m' : r.hungerScore > 50 ? '\x1b[33m' : r.hungerScore > 25 ? '\x1b[36m' : '\x1b[32m';
     const reset = '\x1b[0m';
-    console.log(` ${col}${r.emoji} #${r.rank}   \x1b[36m${r.path}\x1b[0m  ${r.size.padStart(10)}  ${r.fillRate.padStart(13)}  ${r.hungerScore}`);
+    console.log(` ${col}${r.emoji} #${r.rank}   \x1b[36m${r.path}\x1b[0m`);
+    console.log(`                    Size: ${r.size.padStart(13)}  Rate: ${r.fillRate.padStart(14)}  Hunger: ${r.hungerScore}`);
+    console.log();
   }
 
   console.log('\n\nLAYER SIBLING BREAKDOWN');
