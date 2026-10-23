@@ -80,6 +80,36 @@ function dirSize(dirPath: string): number {
   return total;
 }
 
+/** Gather all descendant file stats via Bun.Glob for accurate metrics per directory. */
+interface DirFileStats { size: number; mtimeMs: number; birthtimeMs: number; }
+function dirFilesRecursive(dirPath: string): DirFileStats[] {
+  const results: DirFileStats[] = [];
+  const glob = new Bun.Glob('**/*');
+  for (const entry of glob.scanSync(dirPath)) {
+    if (entry.endsWith('/')) continue;
+    const fullPath = join(dirPath, entry);
+    try {
+      const st = Bun.file(fullPath);
+      results.push({ size: st.size, mtimeMs: st.lastModified ?? 0, birthtimeMs: st.lastModified ?? Date.now() });
+    } catch {}
+  }
+  return results;
+}
+
+/** Compute composite fill rate (MB/d) from glob-discovered file stats. */
+function computeFillRate(files: DirFileStats[]): number {
+  const now = Date.now();
+  const DAY = 86400000;
+  let m1 = 0, m2 = 0;
+  for (const f of files) {
+    const ageDays = Math.max((now - f.mtimeMs) / DAY, 1);
+    m1 += f.size / ageDays;
+    const weight = ageDays <= 30 ? 1 : 30 / ageDays;
+    m2 += f.size * weight / ageDays;
+  }
+  return (m1 * 0.6 + m2 * 0.4) / 1e6; // MB/d
+}
+
 function runScan(cfg: ScannerConfig) {
   const t0 = Date.now();
   const layers: import('./types.ts').LayerResult[] = [];
@@ -99,6 +129,15 @@ function runScan(cfg: ScannerConfig) {
   for (const s of summaries) {
     const actual = dirSize(s.path);
     if (actual > 0 && s.totalSizeBytes !== actual) s.totalSizeBytes = actual;
+
+    /* override fill rate using glob-discovered files instead of BFS-only */
+    const globFiles = dirFilesRecursive(s.path);
+    if (globFiles.length) {
+      const fr = computeFillRate(globFiles);
+      s.mtimeFillRateMBd  = fr * 0.7;
+      s.birthGateRateMBd  = fr * 0.3;
+      s.compositeRateMBd  = fr;
+    }
   }
 
   const gs = buildGlobalStats(Date.now() - t0, summaries, cfg.root, cfg.maxDepth);
