@@ -299,14 +299,14 @@ export function buildGlobalStats(durationsMs: number, summaries: DirSummary[], e
 }
 
 export function buildRankings(summaries: DirSummary[], topN: number): TableRow[] {
-  const seen = new Set<string>();                                             // dedup by parent path
-  return summaries.filter(d => {
-    if (seen.has(d.parentPath)) return false;
-    seen.add(d.parentPath); return true;
-  }).slice(0, topN).map((d, i) => ({ rank: i + 1, emoji: rankEmoji(i + 1), path: d.path, size: formatSize(d.totalSizeBytes), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore }));
+  /* Sort by totalSizeBytes so top eaters actually reflect real space usage */
+  return [...summaries]
+    .sort((a, b) => b.totalSizeBytes - a.totalSizeBytes)
+    .slice(0, topN)
+    .map((d, i) => ({ rank: i + 1, emoji: rankEmoji(i + 1), path: d.path, size: formatSize(d.totalSizeBytes), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore }));
 }
 
-export function buildLayerBreakdowns(summaries: DirSummary[]): LayerBreakdown[] {
+export function buildLayerBreakdowns(summaries: DirSummary[], siblingLimit = 50): LayerBreakdown[] {
   const byParent = new Map<string, DirSummary[]>();
   for (const s of summaries) {
     if (!byParent.has(s.parentPath)) byParent.set(s.parentPath, []);
@@ -321,7 +321,7 @@ export function buildLayerBreakdowns(summaries: DirSummary[]): LayerBreakdown[] 
     result.push({
       layerKey: `Layer${layerCount}`,
       parentPath: pp, totalSizeBytes: parentTotal, siblingCount: dirs.length,
-      siblings: dirs.map((d, i) => ({ name: d.name, sizeStr: formatSize(d.totalSizeBytes), percentOfParent: +(d.totalSizeBytes / parentTotal * 100).toFixed(1), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore, rank: i + 1 })),
+      siblings: dirs.slice(0, siblingLimit).map((d, i) => ({ name: d.name, sizeStr: formatSize(d.totalSizeBytes), percentOfParent: +(d.totalSizeBytes / parentTotal * 100).toFixed(1), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore, rank: i + 1 })),
     });
   }
   return result;

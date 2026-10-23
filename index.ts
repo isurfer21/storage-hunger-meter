@@ -149,7 +149,8 @@ function runScan(cfg: ScannerConfig) {
 
 function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<ReturnType<typeof runScan>>['global'], topN: number): void {
   const rankings  = buildRankings(summaries, topN);
-  const breakdowns = buildLayerBreakdowns(summaries);
+  const siblingLimit = Math.max(10, Math.min(topN, 50));                       // show enough siblings per layer
+  const breakdowns = buildLayerBreakdowns(summaries, siblingLimit);
   const sep    = '━'.repeat(68);
   const fmtDur = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
@@ -162,9 +163,8 @@ function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<Ret
 
   console.log('\nTOP PARENT EATERS');
   const tableRows = rankings.map(r => ({
-    '': r.emoji,
-    '#': r.rank,
-    Path:       r.path,
+    '#': `${r.emoji} ${r.rank}`.trim(),
+    Path:        r.path,
     Size:       r.size,
     'FillRate': r.fillRate,
     Hunger:     r.hungerScore,
