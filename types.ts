@@ -116,7 +116,19 @@ export interface TableRow {
   size: string;     // "24.3 GB"
   fillRate: string; // "+1.2 GB/d"
   hungerScore: number;
-  capturedPct: number;   // % of entry source directory
+
+  /** % of root entry source directory captured */
+  capturedPct?: string | number;
+
+  /** Weighted contributions to the final hunger score (0-100). */
+  contributions: {
+    fillRateContribution: string;   // e.g. "8.2"
+    trendSlopeContribution: string; // e.g. "12.5"
+    birthGateContribution: string;  // e.g. "3.7"
+    siblingImbalanceContribution: string; // e.g. "0.4"
+    icebergPenaltyContribution: string;   // e.g. "0.0"
+    inodeRiskContribution: string;        // e.g. "1.2"
+  };
 }
 
 /// Layer-level sibling breakdown for CLI tables or Web Panel C.

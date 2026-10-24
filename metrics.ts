@@ -185,14 +185,12 @@ function scoreAndPatterns(ds: DirSummary): { score: number; patterns: FileGrowth
   /* inode safety */
   const inodeSafe = (ds.inodeRisk ?? 0) * 50;   // 0-50
 
-  const score = Math.round(
-    normFill      * w.mtimeFillRate     +
-    normTrend     * w.trendSlope         +
-    sibBal        * w.siblingImbalance   +
-    icePen        * w.icebergPenalty     +
-    inodeSafe     * w.inodeSafetyMargin  +
-    Math.min(ds.birthGateRateMBd / MAX_FILL * 100, 100) * w.compositeFillRate
-  );
+  const score = normFill      * w.mtimeFillRate +
+    normTrend     * w.trendSlope   +
+    sibBal        * w.siblingImbalance +
+    icePen        * w.icebergPenalty +
+    inodeSafe     * w.inodeSafetyMargin +
+    Math.min(ds.birthGateRateMBd / MAX_FILL * 100, 100) * w.compositeFillRate;
 
   return { score: Math.min(Math.max(score, 0), 100), patterns: p };
 }
@@ -299,11 +297,28 @@ export function buildGlobalStats(durationsMs: number, summaries: DirSummary[], e
 }
 
 export function buildRankings(summaries: DirSummary[], topN: number, rootTotal = 0): TableRow[] {
-  /* Sort by totalSizeBytes so top eaters actually reflect real space usage */
+  const W = { mtimeFillRate: 0.25, compositeFillRate: 0.30, trendSlope: 0.25, siblingImbalance: 0.05, icebergPenalty: 0.10, inodeSafetyMargin: 0.05 };
   return [...summaries]
     .sort((a, b) => b.totalSizeBytes - a.totalSizeBytes)
     .slice(0, topN)
-    .map((d, i) => ({ rank: i + 1, emoji: rankEmoji(i + 1), path: d.path, size: formatSize(d.totalSizeBytes), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore, capturedPct: rootTotal > 0 ? +(d.totalSizeBytes / rootTotal * 100).toFixed(1) : undefined }));
+    .map((d, i) => {
+      const maxRate = Math.max(d.compositeRateMBd, d.mtimeFillRateMBd, 1);
+      function clamp(v: number): number { return Math.min(Math.max(v, 0), 100); }
+      const fillScore     = clamp(d.compositeRateMBd / maxRate * 100)     * W.mtimeFillRate;
+      const trendScore    = !isNaN(d.cohortTrendSlopeMBpm!) ? clamp(Math.abs(d.cohortTrendSlopeMBpm) / maxRate * 100) * W.trendSlope : 0;
+      const birthScore    = clamp(d.birthGateRateMBd / maxRate * 100)     * W.compositeFillRate;
+      const sibScore      = (d.compositeRateMBd > 0 && d.siblingFraction != null) ? clamp(d.siblingFraction * 100) * W.siblingImbalance : 0;
+      const iceScore      = (d.depthConcentration != null && d.totalSizeBytes > 1e9) ? (1 - d.depthConcentration) * 50 * W.icebergPenalty : 0;
+      const inodeScore    = Math.min(Math.max((d.inodeRisk ?? 0) * 50, 0), 100) * W.inodeSafetyMargin;
+      return { rank: i + 1, emoji: rankEmoji(i + 1), path: d.path, size: formatSize(d.totalSizeBytes), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore, capturedPct: rootTotal > 0 ? +(d.totalSizeBytes / rootTotal * 100).toFixed(1) : undefined, contributions: {
+        fillRateContribution:     `${fillScore.toFixed(1)}`,
+        trendSlopeContribution:   `${trendScore.toFixed(1)}`,
+        birthGateContribution:    `${birthScore.toFixed(1)}`,
+        siblingImbalanceContribution: `${sibScore.toFixed(1)}`,
+        icebergPenaltyContribution: `${iceScore.toFixed(1)}`,
+        inodeRiskContribution:    `${inodeScore.toFixed(1)}`,
+      } };
+    });
 }
 
 export function buildLayerBreakdowns(summaries: DirSummary[], siblingLimit = 50): LayerBreakdown[] {

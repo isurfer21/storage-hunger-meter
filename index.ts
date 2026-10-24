@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { serve } from 'bun';
-import type { ScannerConfig, MetricsConfig } from './types.ts';
+import type { ScannerConfig, MetricsConfig, TableRow } from './types.ts';
 import { bfsWalk }          from './scanner.ts';
 import { computeMetrics, buildGlobalStats, buildRankings } from './metrics.ts';
 
@@ -19,6 +19,8 @@ const HELP = `\
     --mode cli|web           Output mode — table or dashboard (default: cli)
     --port <n>               Port for web mode (default: 3000)
     -h, --help               Show this help menu
+    --columns <list>         Comma-separated subset of the extra columns to show.
+                             Default: Fill Rate,Trend Slope,Birth Gate,Sibling Imb,Iceberg Pen,Inode Risk
 
   Samples:
 
@@ -42,10 +44,12 @@ function showHelp(): never {
   process.exit(0);
 }
 
-function parseArgs(): { entry: string; depth: number; topN: number; mode: 'cli' | 'web'; port: number } {
+const DEFAULT_COLUMNS = ['Fill Rate','Trend Slope','Birth Gate','Sibling Imb','Iceberg Pen','Inode Risk'];
+
+function parseArgs(): { entry: string; depth: number; topN: number; mode: 'cli' | 'web'; port: number; columns?: string[] } {
   const args = process.argv.slice(2);
   let entry = homedir();
-  let depth = 5, topN = 10, port = 3000, mode: 'cli'|'web' = 'cli';
+  let depth = 5, topN = 10, port = 3000, mode: 'cli'|'web' = 'cli', columns: string[] | undefined;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -56,6 +60,7 @@ function parseArgs(): { entry: string; depth: number; topN: number; mode: 'cli' 
       case '--top':                  topN  = +args[++i] || topN;             break;
       case '--mode':                 mode  = (args[i + 1] as 'cli'|'web') || mode; i++; break;
       case '--port':                 port  = +args[++i] || port;              break;
+      case '--columns':              columns = args[++i].split(','); break;
     }
   }
 
@@ -63,7 +68,7 @@ function parseArgs(): { entry: string; depth: number; topN: number; mode: 'cli' 
   let resolved: string; try { resolved = realpathSync(entry); } catch { console.error(`ERR: can't resolve '${entry}'.`); process.exit(69); }
   if (!resolved) { console.error('ERR: path unreachable.'); process.exit(69); }
 
-  return { entry: resolved, depth, topN, mode, port };
+  return { entry: resolved, depth, topN, mode, port, columns };
 }
 
 /* ═══════════════ shared scan pipeline ═══════════════ */
@@ -147,10 +152,21 @@ function runScan(cfg: ScannerConfig) {
 
 /* ═══════════════ CLI formatter ═══════════════ */
 
-function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<ReturnType<typeof runScan>>['global'], topN: number): void {
+function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<ReturnType<typeof runScan>>['global'], topN: number, selColumns?: string[]): void {
   const rankings  = buildRankings(summaries, topN, gs.totalBytesScanned);
   const sep    = '━'.repeat(68);
   const fmtDur = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+  const cols = selColumns ?? DEFAULT_COLUMNS;
+
+  /* Extra columns only applied when --columns is selected */
+  const EXTRA_KEY_MAP: Record<string, (ri: TableRow) => string> = {
+    'Fill Rate':       ri => ri.contributions.fillRateContribution      ?? '?',
+    'Trend Slope':     ri => ri.contributions.trendSlopeContribution    ?? '?',
+    'Birth Gate':      ri => ri.contributions.birthGateContribution     ?? '?',
+    'Sibling Imb':     ri => ri.contributions.siblingImbalanceContribution ?? '?',
+    'Iceberg Pen':     ri => ri.contributions.icebergPenaltyContribution     ?? '?',
+    'Inode Risk':      ri => ri.contributions.inodeRiskContribution          ?? '?',
+  };
 
   console.log('\n🍽️  Hunger Meter — Storage Eaters');
   console.log(`   Scan depth: ${gs.depthScanned} | Total dirs analyzed: ${gs.totalDirs} | Duration: ${fmtDur(gs.durationMs)}`);
@@ -159,14 +175,13 @@ function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<Ret
 
   if (!rankings.length) { console.log('No files found.'); return; }
 
-  console.log('\nEATERS LEADERBOARD');
   const tableRows = rankings.map(r => {
-    const rankStr = r.rank <= 3 ? `${r.emoji}` : r.emoji;          // 🥇/#4 already shows rank
-    return { '#': rankStr, Path: r.path, Size: r.size, 'Fill Rate': r.fillRate, Captured: `${r.capturedPct}%`, Hunger: r.hungerScore };
+    const base: Record<string, string> = { '#': r.rank <= 3 ? r.emoji : r.emoji, Path: r.path, Size: r.size, 'Rate (MB/d)': r.fillRate, Captured: `${r.capturedPct}%`, Hunger: r.hungerScore.toFixed(2) };
+    const rows = Object.entries(EXTRA_KEY_MAP).filter(([name]) => cols.includes(name));
+    for (const [k, fn] of rows) base[k] = fn(r);
+    return { ...base };
   });
-  console.log(Bun.inspect.table(tableRows, { truncate: 80 }));
-
-}
+  console.log(Bun.inspect.table(tableRows, { truncate: 80 }));}
 
 function formatSize(bytes: number): string {
   const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; let v = Math.max(Math.abs(bytes), 1);
@@ -362,7 +377,7 @@ export function run(): void {
     /* — run → format → print — */
     console.log('🍽️  Scanning %s (depth %d)...\n', scanCfg.root, cliCfg.depth);
     const scan = runScan(scanCfg);                                    // summaries + global stats
-    renderCLI(scan.data, scan.global, cliCfg.topN);                   // formatted table to stdout
+    renderCLI(scan.data, scan.global, cliCfg.topN, cliCfg.columns);  // formatted table to stdout
   } else {
     /* — web: scan then serve — */
 
