@@ -116,6 +116,7 @@ export interface TableRow {
   size: string;     // "24.3 GB"
   fillRate: string; // "+1.2 GB/d"
   hungerScore: number;
+  capturedPct: number;   // % of entry source directory
 }
 
 /// Layer-level sibling breakdown for CLI tables or Web Panel C.

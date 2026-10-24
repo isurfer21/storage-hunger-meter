@@ -173,7 +173,7 @@ Primary table layout:
    Scan depth: 3 | Entries visited: 12,847 | Duration: 2.4s
 
 
-TOP PARENT EATERS
+EATERS LEADERBOARD
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ════════  ═══════════
  Rank    Path                                           Size        Rate
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ════════  ═══════════

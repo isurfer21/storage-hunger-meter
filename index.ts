@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { serve } from 'bun';
 import type { ScannerConfig, MetricsConfig } from './types.ts';
 import { bfsWalk }          from './scanner.ts';
-import { computeMetrics, buildGlobalStats, buildRankings, buildLayerBreakdowns } from './metrics.ts';
+import { computeMetrics, buildGlobalStats, buildRankings } from './metrics.ts';
 
 /* ═══════════════ arg parsing ═══════════════ */
 
@@ -148,9 +148,7 @@ function runScan(cfg: ScannerConfig) {
 /* ═══════════════ CLI formatter ═══════════════ */
 
 function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<ReturnType<typeof runScan>>['global'], topN: number): void {
-  const rankings  = buildRankings(summaries, topN);
-  const siblingLimit = Math.max(10, Math.min(topN, 50));                       // show enough siblings per layer
-  const breakdowns = buildLayerBreakdowns(summaries, siblingLimit);
+  const rankings  = buildRankings(summaries, topN, gs.totalBytesScanned);
   const sep    = '━'.repeat(68);
   const fmtDur = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
@@ -161,24 +159,13 @@ function renderCLI(summaries: ReturnType<typeof computeMetrics>, gs: Awaited<Ret
 
   if (!rankings.length) { console.log('No files found.'); return; }
 
-  console.log('\nTOP PARENT EATERS');
+  console.log('\nEATERS LEADERBOARD');
   const tableRows = rankings.map(r => {
     const rankStr = r.rank <= 3 ? `${r.emoji}` : r.emoji;          // 🥇/#4 already shows rank
-    return { '#': rankStr, Path: r.path, Size: r.size, 'FillRate': r.fillRate, Hunger: r.hungerScore };
+    return { '#': rankStr, Path: r.path, Size: r.size, 'Fill Rate': r.fillRate, Captured: `${r.capturedPct}%`, Hunger: r.hungerScore };
   });
   console.log(Bun.inspect.table(tableRows, { truncate: 80 }));
 
-
-  console.log('\n\nLAYER SIBLING BREAKDOWN');
-  for (const lb of breakdowns.slice(0, 5)) {
-    const pct = `${formatSize(lb.totalSizeBytes)} total (${lb.siblingCount} dirs)`;
-    console.log(`\n${lb.layerKey} — ${lb.parentPath} (~${pct})`);
-    for (const sib of lb.siblings.slice(0, 5)) {
-      const arrow = sib.rank === 1 ? ' ← hungeriest' : '';
-      console.log(`  ${sib.rank}. ${sib.name.padEnd(20)} → ${sib.sizeStr.padStart(8)} (${sib.percentOfParent}%)  ${sib.fillRate}${arrow}`);
-    }
-  }
-  console.log();
 }
 
 function formatSize(bytes: number): string {

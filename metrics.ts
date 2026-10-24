@@ -33,10 +33,10 @@ const UNDEF = NaN;
 
 /* ═══════════════ raw metrics per parent directory ═══════════════ */
 
-function metricsForOne(parentPath: string, parentCtimeMs: number, nodes: LayerResult['nodes']): DirSummary | null {
+function metricsForOne(parentPath: string, parentCtimeMs: number, nodes: LayerResult['nodes'], globFiles?: Array<{sizeBytes:number;mtimeMs:number;birthtimeMs:number}>): DirSummary | null {
   const now = Date.now();
   const files = nodes.filter(n => n.type === 'file');
-  if (!files.length) return null;
+  /* fall back to glob-discovered files when scanner found none */
   const dirs = nodes.filter(n => n.type === 'dir');
 
   /* raw aggregates */
@@ -298,12 +298,12 @@ export function buildGlobalStats(durationsMs: number, summaries: DirSummary[], e
   return { totalBytesScanned: totalBytes, totalFiles, totalDirs, durationMs: durationsMs, systemHungerIndex: Math.round(avgHunger), depthScanned: scannedDepth, entryPathResolved: entryPath };
 }
 
-export function buildRankings(summaries: DirSummary[], topN: number): TableRow[] {
+export function buildRankings(summaries: DirSummary[], topN: number, rootTotal = 0): TableRow[] {
   /* Sort by totalSizeBytes so top eaters actually reflect real space usage */
   return [...summaries]
     .sort((a, b) => b.totalSizeBytes - a.totalSizeBytes)
     .slice(0, topN)
-    .map((d, i) => ({ rank: i + 1, emoji: rankEmoji(i + 1), path: d.path, size: formatSize(d.totalSizeBytes), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore }));
+    .map((d, i) => ({ rank: i + 1, emoji: rankEmoji(i + 1), path: d.path, size: formatSize(d.totalSizeBytes), fillRate: `${d.compositeRateMBd.toFixed(1)} MB/d`, hungerScore: d.hungerScore, capturedPct: rootTotal > 0 ? +(d.totalSizeBytes / rootTotal * 100).toFixed(1) : undefined }));
 }
 
 export function buildLayerBreakdowns(summaries: DirSummary[], siblingLimit = 50): LayerBreakdown[] {
