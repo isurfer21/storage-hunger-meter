@@ -1,10 +1,25 @@
 {
   "name": "hunger-meter",
-  "module": "index.ts",
-  "type": "module",
+  "version": "1.0.0",
   "private": true,
+  "description": "An offline-first filesystem scanner that measures 'storage hunger' — how aggressively directories consume disk space over time. Built with pure TypeScript (Bun), zero external runtime dependencies, and a no-framework SPA dashboard.",
+  "homepage": "https://github.com/isurfer21/storage-hunger-meter#readme",
+  "bugs": {
+    "url": "https://github.com/isurfer21/storage-hunger-meter/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://isurfer21@github.com/isurfer21/storage-hunger-meter.git"
+  },
+  "license": "MIT",
+  "author": "Abhishek Kumar",
+  "type": "module",
+  "main": "index.js",
   "bin": {
     "hunger-meter": "index.ts"
+  },
+  "directories": {
+    "doc": "docs"
   },
   "scripts": {
     "start": "bun run --watch index.ts",
@@ -17,5 +32,6 @@
   },
   "peerDependencies": {
     "typescript": "^5"
-  }
+  },
+  "module": "index.ts"
 }
