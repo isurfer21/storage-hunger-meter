@@ -60,27 +60,22 @@ function render(d) {
     'System Index: <span>' + (gs.systemHungerIndex || 0) + '/100</span> | ' +
     'Entry path: <span>' + escapeHtml(d.entryPath || '') + '</span>';
 
-  /* tree sidebar */
-  const parentMap = {};
-  layers.forEach(lb => {
-    lb.siblings.forEach(s => {
-      if (!parentMap[lb.parentPath]) parentMap[lb.parentPath] = [];
-      const safeKey = escapeAttr(lb.parentPath);
-      parentMap[lb.parentPath].push({ name: s.name, path: safeKey + '/' + escapeAttr(s.name), size: (s.sizeStr != null ? s.sizeStr : '-') });
-    });
+  /* sidebar — flat ranking table (like CLI) */
+  const rankings = d.primaryRankings || [];
+  let treeHtml = '<table class="summary"><thead><tr>' +
+    '<th>#</th><th>Dir</th><th>Size</th><th>Rate</th><th>Hunger</th><th>Capt.</th></tr></thead><tbody>';
+  rankings.forEach(r => {
+    treeHtml += '<tr class="node" onclick="selectByPath(\'' + safeAttr(r.path) + '\')" ' +
+      'title="' + escapeHtml(r.path) + '">' +
+      '<td>' + r.emoji + '</td>' +
+      '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="'+escapeHtml(r.path)+'">'+escapeHtml(r.path)+'</td>' +
+      '<td>' + r.size + '</td>' +
+      '<td>' + r.fillRate + '</td>' +
+      '<td style="color:' + hungerColor(r.hungerScore) + '">' + r.hungerScore.toFixed(1) + '</td>' +
+      '<td>' + (r.capturedPct != null ? r.capturedPct + '%' : '-') + '</td></tr>';
   });
-  let html = '';
-  for (const pp of Object.keys(parentMap)) {
-    html += '<div>' +
-      '<b>' + escapeHtml(pp.split('/').filter(Boolean).pop()) + '</b>';
-    parentMap[pp].forEach(s => {
-      html += '<div class="node" onclick="selectDir(\'' + s.path + '\')" data-dir="' + safeAttr(pp + '/' + s.name) + '">' +
-        '📁&nbsp;<span>' + escapeHtml(s.name) + '</span>' +
-        '<span style="margin-left:auto;color:var(--muted)">' + s.size + '</span></div>';
-    });
-    html += '</div>';
-  }
-  document.getElementById('tree').innerHTML = html;
+  treeHtml += '</tbody></table>';
+  document.getElementById('tree').innerHTML = treeHtml;
 
   /* Panel A + B */
   renderPanelA(d);
@@ -165,28 +160,18 @@ function renderPanelC(dir) {
   document.getElementById('detailGrid').style.display = 'grid';
 }
 
-function selectDir(dirPath) {
-  /* highlight active */
+function selectByPath(dirPath) {
+  /* highlight active row */
   document.querySelectorAll('#tree .node').forEach(n => n.classList.remove('active'));
   event.currentTarget.classList.add('active');
 
-  if (_data?.layerBreakdowns) {
-    const found = _data.layerBreakdowns.flatMap(lb => lb.siblings).find(s => dirPath.split('/').pop() === s.name);
-    if (found) {
-      /* layerBreakdown siblings have sizeStr & hungerScore but not full DirSummary — build what we can */
-      for (const lb of _data.layerBreakdowns) {
-        const match = lb.siblings.find(s => s.name === found.name);
-        if (match) {
-          renderPanelC({
-            name: match.name, totalSizeBytes: null, fileCount: '-', dirCount: '-',
-            inodeRisk: 0, mtimeFillRateMBd: 0, birthGateRateMBd: 0,
-            siblingFraction: match.percentOfParent ? match.percentOfParent / 100 : null,
-            depthConcentration: null,
-          });
-          return;
-        }
-      }
-    }
+  if (_data?.primaryRankings) {
+    const r = _data.primaryRankings.find(p => p.path === dirPath);
+    if (r) renderPanelC({
+      name: dirPath.split('/').pop(), totalSizeBytes: null, fileCount: '-', dirCount: '-',
+      inodeRisk: 0, mtimeFillRateMBd: parseFloat(r.fillRate) || 0, birthGateRateMBd: 0,
+      siblingFraction: null, depthConcentration: null,
+    });
   }
 }
 
