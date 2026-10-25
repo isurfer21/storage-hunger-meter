@@ -5,6 +5,7 @@ let _data = null;
 async function reScan() {
   const entry = document.getElementById('entry').value || '';
   const btn = document.getElementById('btn-scan');
+  if (!btn) return;                        // page still loading
   btn.disabled = true;
   btn.textContent = 'Scanning…';
   setLoading(true);
@@ -27,11 +28,7 @@ async function reScan() {
       entrySpan.textContent = entry;
     }
 
-    /* also show initial scan's entry path */
-    if (!_data.entryPath && _data.data?.length) {
-      const root = _data.data.find(d => d.parentPath === '/' || d.path.endsWith('/'));
-      if (root) document.getElementById('scan-path').textContent = root.path;
-    }
+    /* scan-path already set above from _data.entryPath */
 
     render(_data);
   } catch(e) {
@@ -69,7 +66,7 @@ function render(d) {
     lb.siblings.forEach(s => {
       if (!parentMap[lb.parentPath]) parentMap[lb.parentPath] = [];
       const safeKey = escapeAttr(lb.parentPath);
-      parentMap[lb.parentPath].push({ name: s.name, path: safeKey + '/' + escapeAttr(s.name), size: s.sizeStr });
+      parentMap[lb.parentPath].push({ name: s.name, path: safeKey + '/' + escapeAttr(s.name), size: (s.sizeStr != null ? s.sizeStr : '-') });
     });
   });
   let html = '';
@@ -79,7 +76,7 @@ function render(d) {
     parentMap[pp].forEach(s => {
       html += '<div class="node" onclick="selectDir(\'' + s.path + '\')" data-dir="' + safeAttr(pp + '/' + s.name) + '">' +
         '📁&nbsp;<span>' + escapeHtml(s.name) + '</span>' +
-        '<span style="margin-left:auto;color:var(--muted)">' + s.sizeStr + '</span></div>';
+        '<span style="margin-left:auto;color:var(--muted)">' + s.size + '</span></div>';
     });
     html += '</div>';
   }
@@ -89,12 +86,8 @@ function render(d) {
   renderPanelA(d);
   renderPanelB(d);
 
-  /* Panel C: default to first sibling for inspection */
-  const firstLayer = layers[0];
-  if (firstLayer?.siblings?.[0]) {
-    /* build a DirSummary-like object from the layer data */
-    renderPanelC({ name: firstLayer.siblings[0].name, totalSizeBytes: parseSize(firstLayer.parentPath) }); // placeholder
-  }
+  /* Panel C: skip default — we have no DirSummary payload (always null). Displays on directory click instead. */
+  document.getElementById('panelC').innerHTML = 'Click a directory in the sidebar';
 
   /* Panel D: summary table with all extra columns */
   let t = '<table class="summary"><thead><tr>' +
@@ -148,17 +141,17 @@ function renderPanelB(d) {
 }
 
 function renderPanelC(dir) {
-  if (!dir || !dir.totalSizeBytes) return;
+  if (!dir) return;
   const cells = [
-    ['Total Size', formatBytes(dir.totalSizeBytes)],
-    ['File Count', dir.fileCount?.toString() ?? '-'],
-    ['Dir Count', dir.dirCount?.toString() ?? '-'],
-    ['Avg Dir Size', formatBytes(avgBytes(dir))],
+    ['Total Size', dir.totalSizeBytes != null ? formatBytes(dir.totalSizeBytes) : '—'],
+    ['File Count', dir.fileCount?.toString() ?? '—'],
+    ['Dir Count', dir.dirCount?.toString() ?? '—'],
+    ['Avg Dir Size', dir.totalSizeBytes && dir.fileCount > 0 ? formatBytes(dir.totalSizeBytes / dir.fileCount) : '—'],
     ['Inode Risk', (dir.inodeRisk ?? 0).toFixed(1)],
-    ['Mtime MR/M/d', (dir.mtimeFillRateMBd??0).toFixed(2) + ' MB/d'],
-    ['Birth Gate', (dir.birthGateRateMBd??0).toFixed(2) + ' MB/d'],
-    ['Sib Balance', dir.siblingFraction != null ? dir.siblingFraction.toFixed(3) : '-'],
-    ['Deph Conc.', dir.depthConcentration != null ? dir.depthConcentration.toFixed(3) : '-'],
+    ['Mtime MR/M/d', (dir.mtimeFillRateMBd ?? 0).toFixed(2) + ' MB/d'],
+    ['Birth Gate', (dir.birthGateRateMBd ?? 0).toFixed(2) + ' MB/d'],
+    ['Sib Balance', dir.siblingFraction != null ? dir.siblingFraction.toFixed(3) : '—'],
+    ['Deph Conc.', dir.depthConcentration != null ? dir.depthConcentration.toFixed(3) : '—'],
   ];
   let html = '<div class="data-grid" style="display:grid">';
   cells.forEach(([label, value]) => {
@@ -177,14 +170,21 @@ function selectDir(dirPath) {
   document.querySelectorAll('#tree .node').forEach(n => n.classList.remove('active'));
   event.currentTarget.classList.add('active');
 
-  /* find the matching DirSummary in cached data and display its detail */
   if (_data?.layerBreakdowns) {
     const found = _data.layerBreakdowns.flatMap(lb => lb.siblings).find(s => dirPath.split('/').pop() === s.name);
     if (found) {
-      /* we need the real DirSummary object — build from layerBreakdown + data */
+      /* layerBreakdown siblings have sizeStr & hungerScore but not full DirSummary — build what we can */
       for (const lb of _data.layerBreakdowns) {
-        const dir = _data.data.find(d => d.name === found.name && d.parentPath === lb.parentPath);
-        if (dir) { renderPanelC(dir); return; }
+        const match = lb.siblings.find(s => s.name === found.name);
+        if (match) {
+          renderPanelC({
+            name: match.name, totalSizeBytes: null, fileCount: '-', dirCount: '-',
+            inodeRisk: 0, mtimeFillRateMBd: 0, birthGateRateMBd: 0,
+            siblingFraction: match.percentOfParent ? match.percentOfParent / 100 : null,
+            depthConcentration: null,
+          });
+          return;
+        }
       }
     }
   }
