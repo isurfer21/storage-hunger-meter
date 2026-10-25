@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hunger Meter</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+<div id="topbar">
+  <h1>🍽️ Hunger Meter</h1>
+  <input id="entry" type="text" placeholder="/path/to/scan">
+  <span id="scan-path"></span>
+  <button onclick="reScan()">▶ Scan</button>
+</div>
+<div class="stats" id="statsBar"></div>
+
+<div id="main">
+  <div id="tree"></div>
+  <div id="panels">
+    <div id="loading">Click <b>Scan</b> to start…</div>
+    <div class="panel-grid" id="grid" style="display:none">
+      <div class="panel"><h3>Hunger Score</h3><div id="panelA"></div></div>
+      <div class="panel"><h3>Fill Rate (MB/d)</h3><div id="panelB"></div></div>
+      <div class="panel"><h3>Selected Dir Metrics</h3><div id="panelC"></div><div id="detailGrid" class="data-grid" style="display:none;margin-top:8px"></div></div>
+      <div class="panel"><h3>All Directories</h3><div style="overflow:auto;flex:1" id="panelD"></div></div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
